@@ -1,0 +1,309 @@
+import math
+import re
+import requests
+import json
+import dateutil.relativedelta
+from datetime import datetime, timedelta
+
+
+today_date = datetime.now().date()
+
+
+def convert_date(date_):
+    return str(date_.strftime('%Y-%m-%dT' + '00:00:00.0000000Z'))
+
+
+def get_date_range():
+    now_hour_date_time = datetime.now() - timedelta(hours = 0)
+    last_hour_date_time = datetime.now() - timedelta(hours = 24)
+    print(now_hour_date_time.strftime('%Y-%m-%d %H:%M:%S'), '--', last_hour_date_time.strftime('%Y-%m-%d %H:%M:%S'))
+    #start_date = dateutil.relativedelta.relativedelta(days=3)
+    #end_date = dateutil.relativedelta.relativedelta(days=0)
+    #current_date = datetime.datetime.strptime(str(today_date), "%Y-%m-%d")
+    #print(current_date - start_date, current_date - end_date)
+    #return current_date - start_date, current_date - end_date
+    return last_hour_date_time.strftime('%Y-%m-%d %H:%M:%S'), now_hour_date_time.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def generate_token_pp():
+    headers_ = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }
+    data = 'grant_type=client_credentials&client_id= &client_secret= '
+    response_ = requests.post('https://auth.proofpoint.com/v1/token', headers=headers_, data=data)
+    get_response = response_.json()
+    return get_response["access_token"]
+    # print(get_token)
+
+
+def incident_count(token, start_date, end_date):
+    headers_ = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': "Bearer " + token
+    }
+
+    # "2025-01-30 00:00:00"
+    # "2025-01-30 23:59:59"
+    payload = json.dumps({
+      "filters": {
+        "time_range_filter": {
+          "start": str(start_date),
+          "end": str(end_date)
+        },
+        "source_filters": [
+          "tap",
+          "abuse_mailbox"
+        ],
+        "sortParams": [{
+            "sort": "desc",
+            "colId": "createdAt"
+        }],
+        # "other_filters":[
+        #    "open_incidents"
+        # ],
+      }
+    })
+    print("payload", payload)
+    response_2 = requests.post("https://threatprotection-api.proofpoint.com/api/v1/tric/incidents/count",
+                               headers=headers_, data=payload)
+    print("count=", response_2.json())
+    return headers_, response_2.json()
+
+
+def incident_data(headers_, total_inc_number, start_date, end_date):
+    max_per_req = 500
+    req_range = {}
+
+    if total_inc_number > max_per_req:
+        total_requests = math.floor(total_inc_number/max_per_req)
+        print("Total_Req=", total_requests)
+        count, for_one, fixed = 0, 0, 1
+
+        for req in range(total_requests):
+            if req == 0:
+                req_range[count] = count + max_per_req
+            else:
+                req_range[count+fixed] = count + max_per_req
+            count += max_per_req
+        if total_requests == 1:
+            for_one = 1
+
+        # if the incident number is 1000, 1500, 2000, 3000
+        if int(total_inc_number % max_per_req) > 0:
+            req_range[list(req_range.keys())[-1]+max_per_req+for_one] = list(req_range.keys())[-1]+max_per_req + int(total_inc_number % max_per_req) - 1 + for_one
+    else:
+        print("else")
+        req_range[0] = total_inc_number
+
+    incidents = []
+    #print(f"{start_date}  +++++++ {end_date}")
+
+    for start_row, end_row in req_range.items():
+        print(start_row, "+++++++", end_row)
+        payload_2 = json.dumps({
+          "filters": {
+                "incident_id_filters": [],
+                "time_range_filter": {
+                  "start": str(start_date),
+                  "end": str(end_date)
+                },
+                "source_filters": [
+                  "tap",
+                  "abuse_mailbox"
+                ],
+            },
+            "endRow": end_row,
+            "sortParams": [{
+                "sort": "desc",
+                "colId": "createdAt"
+            }],
+            "startRow": start_row
+        })
+
+        response_3 = requests.post("https://threatprotection-api.proofpoint.com/api/v1/tric/incidents",
+                                   headers=headers_, data=payload_2)
+        test = response_3.json()
+        #print("Total_Count=", len(test['incidents']))
+        final_data = response_3.json()
+        # Append incidents to list
+        data = final_data.get('incidents', [])
+        incidents += data
+
+    print("Total Incidents count", len(incidents))
+
+    return incidents
+
+
+# to get the incident msg
+def incident_message(header_, inc_msg_id):
+    # incident_message(headers, "54617295-fe55-4504-a160-c2ed5f75894b")
+    payload = json.dumps({
+          "filters": {
+                "incident_id_filters": [],
+            },
+            "endRow": 200,
+            "sortParams": [{
+                "sort": "desc",
+                "colId": "createdAt"
+            }],
+            "startRow": 0
+    })
+    response = requests.post(f"https://threatprotection-api.proofpoint.com/api/v1/tric/incidents/{inc_msg_id}/messages",
+                             headers=header_, data=payload)
+    get_response = response.json()
+
+    # will return the message only of the incident
+    if get_response:
+        print(get_response["comments"][0]["comment"])
+    # print("count=", response.json())
+    return header_, response.json()
+
+
+def get_xsoar_inc(qry):
+    from_date = dateutil.relativedelta.relativedelta(days=90)
+    to_date = dateutil.relativedelta.relativedelta(days=-1)
+    current_date = datetime.strptime(str(today_date), "%Y-%m-%d")
+
+    from_date = convert_date(current_date - from_date)
+    to_date = convert_date(current_date - to_date)
+
+    print(f"from date={from_date} to To Date={to_date} and {qry}" )
+    print(qry)
+
+    res = demisto.executeCommand("getIncidents", {
+        'query': qry,
+        'fromdate': from_date,
+        'todate': to_date
+    })
+
+    #print(res[0]["Contents"])
+    return res[0]["Contents"]
+
+
+# To create xSOAR Incident
+def create_xsoar_inc(payload):
+    print("payload=", payload)
+    # map the values with the keys
+    return demisto.executeCommand("createNewIncident", payload)
+
+
+def close_xsoar_inc(id_):
+    if id_:
+        print("_id===", id_)
+        # will remove once tested
+        inc_details = demisto.executeCommand("closeInvestigation", {"closeReason":"Resolved","closeNotes":"All necessary actions have been taken and the incident is closed at Proofpoint. Accordingly, we are closing this incident.","id":id_})
+        #print("clsoed_details=",inc_details["data"][0]["id"])
+        return inc_details
+
+
+def get_priority(pri):
+    if pri == "high":
+        priority = 1
+    elif pri == "medium":
+        priority = 2
+    else:
+        priority = 3
+    return priority
+
+
+def extract_and_create_data(pp_data):
+    count = 0
+    to_be_create_inc, to_be_close_inc = [], []
+    for row in pp_data:
+        new_assigned_user = row.get("assignedUserName")
+
+        # Replace None, empty string, or 'NaN'-like values with "NA"
+        if not new_assigned_user or str(new_assigned_user).lower() in ("nan", "none"):
+            new_assigned_user = "NA"
+        #print(row)
+        #print("aaa=",type(row['closedAt']))
+        #print("bbb=",row['closedAt'], len(str(row['closedAt'])))
+        #close_date = "" if len(str(row['closedAt'])) < 4 else row['closedAt']
+        close_date = row.get('closedAt', '')
+        disposition = (row['dispositions'])[0] if row['dispositions'] else ""
+
+        strippedEmail = ""
+        email = re.findall(r'\S+@\S+',row["title"])
+        if email:
+            strippedEmail = str(email[0]).replace('[','').replace(']','')
+            print("Email=", strippedEmail)
+
+        print("state=", row['state'])
+        state = "Active" if row['state'] == "open" else "Closed"
+        to_be_create_inc.append(
+        {
+            "name": row['title'],
+            "type": "ABB - Phishing",
+            "createInvestigation": True,
+            "lastupdatetime": row['updatedAt'],
+            "details": f"INC-{row['displayId']}",
+            "assigneduser": new_assigned_user,
+            "externallink": f"https://threatresponse.proofpoint.com/incidents/{row['id']}",
+            "logsource": (row['sourceTypes'])[0],
+            "initialdisposition": disposition,
+            "resourceid": row.get('sid', ''),
+            "applicationid": f"INC-{row['displayId']}",
+            "ticketcloseddate": close_date,
+            "detecteduser": strippedEmail,
+            "occurred": row['createdAt'],
+            "severity": get_priority(row["priority"]),
+            "state": state
+        })
+        if row['state'] == "closed":
+            to_be_close_inc.append({"inc_id":f"'INC-{row['displayId']}", "priority": row['closedAt']})
+        count += 1
+
+    print(f"to_be_create_inc count {len(to_be_create_inc)} and to_be_close_inc== {to_be_close_inc}")
+
+    # check weather incident create or not
+    created_inc, closed_inc = [], []
+    for item in to_be_create_inc:
+        # query = f'details:"{item['details']}"'
+        query = f'type:"ABB - Phishing" and applicationid:"{item["details"]}"'
+        print(query)
+        get_incident = get_xsoar_inc(query)
+        # print("inc_count=",inc_count, "get_incident=", get_incident[0]["id"])
+        #print("inc_count=", get_incident)
+        # print(item)
+        #exit()
+        if get_incident["total"] >= 1:
+            if item["state"] == "Closed":
+                print("need to close data", get_incident["data"][0]["id"])
+                if get_incident["data"][0]["status"] != 2:
+                    close_xsoar_inc(get_incident["data"][0]["id"])
+                    closed_inc.append(f"INC-{item['details']}")
+            else:
+                print("incident is open so ignore", get_incident["data"][0]["id"])
+        else:
+            print("need to create data")
+            created_id = create_xsoar_inc(item)
+            #print("hello",created_id[0]["EntryContext"]["CreatedIncidentID"])
+            #exit()
+            created_inc.append(f"{item['details']}")
+            if item["state"] == "Closed":
+                print("created and closing incident data", created_id[0]["EntryContext"]["CreatedIncidentID"])
+                close_xsoar_inc(created_id[0]["EntryContext"]["CreatedIncidentID"])
+                closed_inc.append(f"INC-{item['details']}")
+        # exit()
+    print(f"closed_inc count {len(closed_inc)} and closed_inc==={closed_inc}")
+    print(f"created_inc count {len(created_inc)} and created_inc==={created_inc}")
+
+
+if __name__ in ('__main__', '__builtin__', 'builtins'):
+    print(f"The script was started at {datetime.now()}")
+    from_d, end_d = get_date_range()
+
+    get_token = generate_token_pp()
+    headers, get_incident_count = incident_count(get_token, from_d, end_d)
+
+    get_incident_data = incident_data(headers, get_incident_count, from_d, end_d)
+
+    dff = [row for row in get_incident_data if row.get("assignedTeamName") == "ABB SOC"]
+
+    rows = len(dff)
+    columns = len(dff[0]) if rows > 0 else 0
+    print(f"Filtered ABB SOC Incident Rows: {rows}, Columns: {columns}")
+
+    extract_and_create_data(dff)
+    print(f"The script was ended at {datetime.now()}")

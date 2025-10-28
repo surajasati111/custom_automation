@@ -1,0 +1,1 @@
+"C:\Users\INSUAST\AppData\Local\Programs\Python\Python312\python.exe" "C:\Users\INSUAST\Downloads\automation\proof_point\pp_main.py"
